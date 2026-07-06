@@ -204,6 +204,21 @@ pub trait ContextObject {
     fn get_remaining(&self) -> u64;
     /// Return a mutable pointer to the active MemoryMapping
     fn active_mapping_ptr(&mut self) -> ptr::NonNull<MemoryMapping>;
+
+    #[inline(always)]
+    fn on_instruction(&mut self, _pc: u64) {}
+
+    #[inline(always)]
+    fn on_call(&mut self, _callsite_pc: u64, _target_pc: u64) {}
+
+    #[inline(always)]
+    fn on_return(&mut self) {}
+
+    #[inline(always)]
+    fn on_syscall_enter(&mut self, _callsite_pc: u64, _key: u32) {}
+
+    #[inline(always)]
+    fn on_syscall_exit(&mut self, _cost: u64) {}
 }
 
 /// Statistic of taken branches (from a recorded trace)
