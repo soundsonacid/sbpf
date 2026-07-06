@@ -39,6 +39,7 @@ pub mod interpreter;
 pub mod jit;
 mod memory_management;
 pub mod memory_region;
+pub mod profiler;
 pub mod program;
 pub mod static_analysis;
 pub mod verifier;
