@@ -222,6 +222,10 @@ impl<'a, 'b, 'c, C: ContextObject> Interpreter<'a, 'b, 'c, C> {
         #[cfg(feature = "tracer")]
         self.vm.register_trace.push(self.reg);
 
+        // CU-flamegraph: attribute this instruction's base cost (1 CU) to the
+        // current leaf function. No-op for non-profiling context objects.
+        self.vm.context().on_instruction(self.reg[11]);
+
         match insn.opc {
             ebpf::LD_DW_IMM if !self.executable.get_sbpf_version().disable_lddw() => {
                 ebpf::augment_lddw_unchecked(self.program, &mut insn);
@@ -568,6 +572,7 @@ impl<'a, 'b, 'c, C: ContextObject> Interpreter<'a, 'b, 'c, C> {
                     return false;
                 }
                 check_pc!(self, next_pc, target_pc.wrapping_sub(self.program_vm_addr) / ebpf::INSN_SIZE as u64);
+                self.vm.context().on_call(self.reg[11], next_pc);
             },
 
             ebpf::CALL_IMM => {
@@ -575,7 +580,7 @@ impl<'a, 'b, 'c, C: ContextObject> Interpreter<'a, 'b, 'c, C> {
                 // External syscall
                 if !self.executable.get_sbpf_version().static_syscalls() || insn.src == 0 {
                     if let Some((_, (callback, _))) = self.executable.get_loader().get_function_registry().lookup_by_key(insn.imm as u32) {
-                        self.reg[0] = match self.dispatch_syscall(callback) {
+                        self.reg[0] = match self.dispatch_syscall(insn.imm as u32, callback) {
                             ProgramResult::Ok(value) => *value,
                             ProgramResult::Err(_err) => return false,
                         };
@@ -591,6 +596,7 @@ impl<'a, 'b, 'c, C: ContextObject> Interpreter<'a, 'b, 'c, C> {
                         }
                         next_pc = target_pc as u64;
                         resolved = true;
+                        self.vm.context().on_call(self.reg[11], next_pc);
                     }
                 } else if let Some((_, target_pc)) =
                     self.executable
@@ -601,6 +607,7 @@ impl<'a, 'b, 'c, C: ContextObject> Interpreter<'a, 'b, 'c, C> {
                     }
                     check_pc!(self, next_pc, target_pc as u64);
                     resolved = true;
+                    self.vm.context().on_call(self.reg[11], next_pc);
                 }
                 if !resolved {
                     throw_error!(self, EbpfError::UnsupportedInstruction);
@@ -622,6 +629,7 @@ impl<'a, 'b, 'c, C: ContextObject> Interpreter<'a, 'b, 'c, C> {
                     ..ebpf::FIRST_SCRATCH_REG + ebpf::SCRATCH_REGS]
                     .copy_from_slice(&frame.caller_saved_registers);
                 next_pc = frame.target_pc;
+                self.vm.context().on_return();
             }
             _ => throw_error!(self, EbpfError::UnsupportedInstruction),
         }
@@ -630,9 +638,19 @@ impl<'a, 'b, 'c, C: ContextObject> Interpreter<'a, 'b, 'c, C> {
         true
     }
 
-    fn dispatch_syscall(&mut self, function: BuiltinFunction<C>) -> &ProgramResult {
+    fn dispatch_syscall(&mut self, key: u32, function: BuiltinFunction<C>) -> &ProgramResult {
         self.vm.registers[0..6].copy_from_slice(&self.reg[0..6]);
+        self.vm.context().on_syscall_enter(self.reg[11], key);
+        // The instructions executed since the last flush, which the syscall wrapper consumes
+        // on top of the syscall's own cost.
+        let base_flush = self.vm.due_insn_count;
+        let remaining_before = self.vm.context().get_remaining();
         self.vm.invoke_function(function);
+        let remaining_after = self.vm.context().get_remaining();
+        let syscall_cost = remaining_before
+            .saturating_sub(remaining_after)
+            .saturating_sub(base_flush);
+        self.vm.context().on_syscall_exit(syscall_cost);
         self.vm.due_insn_count = 0;
         &self.vm.program_result
     }
