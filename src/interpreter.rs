@@ -191,6 +191,10 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             self.vm.context_object_pointer.trace(self.reg);
         }
 
+        // CU-flamegraph: attribute this instruction's base cost (1 CU) to the
+        // current leaf function. No-op for non-profiling context objects.
+        self.vm.context_object_pointer.on_instruction(self.reg[11]);
+
         match insn.opc {
             ebpf::LD_DW_IMM if !self.executable.get_sbpf_version().disable_lddw() => {
                 ebpf::augment_lddw_unchecked(self.program, &mut insn);
@@ -515,6 +519,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                     !ebpf::get_insn_unchecked(self.program, next_pc as usize).is_function_start_marker() {
                     throw_error!(self, EbpfError::UnsupportedInstruction);
                 }
+                self.vm.context_object_pointer.on_call(self.reg[11], next_pc);
             },
 
             // Do not delegate the check to the verifier, since self.registered functions can be
@@ -530,9 +535,10 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                         return false;
                     }
                     check_pc!(self, next_pc, key as u64);
+                    self.vm.context_object_pointer.on_call(self.reg[11], next_pc);
                 } else if let Some((_, function)) = self.executable.get_loader().get_function_registry().lookup_by_key(insn.imm as u32) {
                     // SBPFv0 syscall
-                    self.reg[0] = match self.dispatch_syscall(function) {
+                    self.reg[0] = match self.dispatch_syscall(insn.imm as u32, function) {
                         ProgramResult::Ok(value) => *value,
                         ProgramResult::Err(_err) => return false,
                     };
@@ -545,6 +551,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                         return false;
                     }
                     check_pc!(self, next_pc, target_pc as u64);
+                    self.vm.context_object_pointer.on_call(self.reg[11], next_pc);
                 } else {
                     throw_error!(self, EbpfError::UnsupportedInstruction);
                 }
@@ -552,7 +559,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
             ebpf::SYSCALL if self.executable.get_sbpf_version().static_syscalls() => {
                 if let Some((_, function)) = self.executable.get_loader().get_function_registry().lookup_by_key(insn.imm as u32) {
                     // SBPFv3 syscall
-                    self.reg[0] = match self.dispatch_syscall(function) {
+                    self.reg[0] = match self.dispatch_syscall(insn.imm as u32, function) {
                         ProgramResult::Ok(value) => *value,
                         ProgramResult::Err(_err) => return false,
                     };
@@ -582,6 +589,7 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
                     ..ebpf::FIRST_SCRATCH_REG + ebpf::SCRATCH_REGS]
                     .copy_from_slice(&frame.caller_saved_registers);
                 check_pc!(self, next_pc, frame.target_pc);
+                self.vm.context_object_pointer.on_return();
             }
             _ => throw_error!(self, EbpfError::UnsupportedInstruction),
         }
@@ -590,10 +598,21 @@ impl<'a, 'b, C: ContextObject> Interpreter<'a, 'b, C> {
         true
     }
 
-    fn dispatch_syscall(&mut self, function: BuiltinFunction<C>) -> &ProgramResult {
+    fn dispatch_syscall(&mut self, key: u32, function: BuiltinFunction<C>) -> &ProgramResult {
         self.vm.due_insn_count = self.vm.previous_instruction_meter - self.vm.due_insn_count;
         self.vm.registers[0..6].copy_from_slice(&self.reg[0..6]);
+        self.vm.context_object_pointer.on_syscall_enter(self.reg[11], key);
+        let base_flush = self
+            .vm
+            .previous_instruction_meter
+            .saturating_sub(self.vm.due_insn_count);
+        let remaining_before = self.vm.context_object_pointer.get_remaining();
         self.vm.invoke_function(function);
+        let remaining_after = self.vm.context_object_pointer.get_remaining();
+        let syscall_cost = remaining_before
+            .saturating_sub(remaining_after)
+            .saturating_sub(base_flush);
+        self.vm.context_object_pointer.on_syscall_exit(syscall_cost);
         self.vm.due_insn_count = 0;
         &self.vm.program_result
     }
