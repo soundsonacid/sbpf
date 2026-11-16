@@ -51,6 +51,8 @@ pub mod test_syscalls;
 #[cfg(feature = "dev-context-only-utils")]
 pub mod test_utils;
 #[cfg(feature = "execution-timing")]
+pub mod step_profile;
+#[cfg(feature = "execution-timing")]
 pub mod timing;
 pub mod verifier;
 pub mod vm;

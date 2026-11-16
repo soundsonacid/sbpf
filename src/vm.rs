@@ -455,7 +455,10 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
         call_frames: &mut [CallFrame],
     ) -> (u64, ProgramResult) {
         #[cfg(feature = "execution-timing")]
-        let _timer = crate::timing::ProgramRunTimer::start(executable.get_sbpf_version());
+        let _timer = crate::timing::ProgramRunTimer::start(
+            executable.get_sbpf_version(),
+            std::ptr::from_ref(executable) as usize,
+        );
         debug_assert!(Arc::ptr_eq(&self.loader, executable.get_loader()));
         self.registers[11] = executable.get_entrypoint_instruction_offset() as u64;
         let initial_insn_count = self.context().get_remaining();
@@ -474,6 +477,10 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
                 ExecutionMode::Interpreted => {
                     let interpreter =
                         Interpreter::new(self, executable, self.registers, call_frames);
+                    #[cfg(feature = "execution-timing")]
+                    if crate::step_profile::enabled() {
+                        break 'execute crate::step_profile::run_interpreter(interpreter);
+                    }
                     break 'execute run_interpreter(interpreter);
                 }
 

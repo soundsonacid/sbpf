@@ -3,7 +3,9 @@
 mod interpreter;
 mod jit;
 
-pub(super) use interpreter::{interpreter, interpreter_step, InterpreterGenerator};
+pub(super) use interpreter::{
+    interpreter, interpreter_step, step_layout, InterpreterGenerator, StepLayout,
+};
 pub use jit::jit_templates;
 
 use super::arch::{SupportEntry, TemplateRelocationKind};

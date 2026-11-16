@@ -8,6 +8,46 @@ use dynasmrt::relocations::{Relocation, RelocationKind};
 use dynasmrt::DynamicLabel;
 use std::sync::LazyLock;
 
+/// EXPERIMENT, not for merging: how the first 16 bits of an instruction (opcode in the low byte,
+/// the two registers in the high byte) become the index of its step.
+///
+/// A step is 128 bytes, so an L1 instruction cache with 64-byte lines and 64 sets picks a
+/// step's set from the low five bits of its index. The layout decides what those bits are.
+/// It is chosen once per process with the environment variable `PARROT_STEP_LAYOUT`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(in crate::codegen) enum StepLayout {
+    /// The 16 bits as they are: the set is picked by the opcode. The default.
+    OpcodeLow,
+    /// The two bytes swapped (`registers-low`): the set is picked by the registers.
+    RegistersLow,
+    /// The registers xored into the opcode byte (`mixed`): the set is picked by both.
+    Mixed,
+}
+
+pub(in crate::codegen) fn step_layout() -> StepLayout {
+    static LAYOUT: LazyLock<StepLayout> =
+        LazyLock::new(|| match std::env::var("PARROT_STEP_LAYOUT").as_deref() {
+            Ok("registers-low") => StepLayout::RegistersLow,
+            Ok("mixed") => StepLayout::Mixed,
+            Ok("opcode-low") | Err(_) => StepLayout::OpcodeLow,
+            Ok(other) => panic!("unknown PARROT_STEP_LAYOUT {:?}", other),
+        });
+    *LAYOUT
+}
+
+impl StepLayout {
+    /// The step index of the instruction that starts with `bits`. Each layout is a permutation
+    /// of the 16-bit values. The dispatch code computes the same thing in machine code.
+    fn index(self, bits: usize) -> usize {
+        let (opcode, registers) = (bits & 0xff, bits >> 8);
+        match self {
+            StepLayout::OpcodeLow => bits,
+            StepLayout::RegistersLow => registers | opcode << 8,
+            StepLayout::Mixed => (opcode ^ registers) | registers << 8,
+        }
+    }
+}
+
 /// The interpreter step for the instructions with `opcode`, of the interpreter for the SBPF
 /// `version`.
 pub(in crate::codegen) fn interpreter_step(
@@ -58,7 +98,7 @@ impl InterpreterGenerator {
 
     /// Offset into the `buffer` for this opcode.
     fn step_offset(opcode: TemplateOpcode) -> usize {
-        opcode.index() << Self::STEP_SIZE_LOG2
+        step_layout().index(opcode.index()) << Self::STEP_SIZE_LOG2
     }
 
     pub(in crate::codegen) fn base(&self) -> *const u8 {

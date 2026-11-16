@@ -295,6 +295,12 @@ impl SupportingCode {
 
             ; =>interpreted
             ; movzx RTEMP, WORD [rax]
+            // EXPERIMENT (see `StepLayout`): the same permutation as in `interpreter_dispatch`.
+            ;; match crate::codegen::generate::step_layout() {
+                crate::codegen::generate::StepLayout::OpcodeLow => {}
+                crate::codegen::generate::StepLayout::RegistersLow => x64asm!(out; rol cx, 8),
+                crate::codegen::generate::StepLayout::Mixed => x64asm!(out; xor cl, ch),
+            }
             ; shl RTEMP, InterpreterGenerator::STEP_SIZE_LOG2 as i8
             ; add RTEMP, [BYTE frame!(code) + rbp]
             ; add RINSN, BYTE ebpf::INSN_SIZE as i8

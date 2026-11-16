@@ -101,6 +101,18 @@ thread_local! {
     static CURRENT_VERSION: Cell<usize> = const { Cell::new(0) };
 }
 
+thread_local! {
+    static BY_EXECUTABLE: RefCell<std::collections::HashMap<usize, VersionTimes>> =
+        RefCell::new(std::collections::HashMap::new());
+    /// Syscalls the running program has made so far in its current run.
+    static SYSCALLS_IN_RUN: Cell<u64> = const { Cell::new(0) };
+}
+
+/// The current thread's totals per executable, by the executable's address.
+pub fn executable_times() -> std::collections::HashMap<usize, VersionTimes> {
+    BY_EXECUTABLE.with_borrow(|by_executable| by_executable.clone())
+}
+
 /// The current thread's totals per SBPF version of the executing program, indexed by version.
 pub fn version_times() -> [VersionTimes; VERSIONS] {
     BY_VERSION.with(|by_version| std::array::from_fn(|version| by_version[version].get()))
@@ -120,16 +132,22 @@ pub(crate) struct ProgramRunTimer {
     version: usize,
     /// The version of the program whose syscall started this run.
     outer_version: usize,
+    /// The address of the executable.
+    executable: usize,
+    /// The syscalls so far of the run whose syscall started this run.
+    outer_syscalls_in_run: u64,
 }
 
 impl ProgramRunTimer {
-    pub(crate) fn start(version: crate::program::SBPFVersion) -> Self {
+    pub(crate) fn start(version: crate::program::SBPFVersion, executable: usize) -> Self {
         let version = version as usize;
         Self {
             was_in_program: IN_PROGRAM.replace(true),
             outer_nested_ns: NESTED_NS.replace(0),
             version,
             outer_version: CURRENT_VERSION.replace(version),
+            executable,
+            outer_syscalls_in_run: SYSCALLS_IN_RUN.replace(0),
             start: Instant::now(),
         }
     }
@@ -153,6 +171,13 @@ impl Drop for ProgramRunTimer {
             times.instructions_ns += instructions_ns;
             times.program_runs += 1;
             by_version[self.version].set(times);
+        });
+        let syscalls = SYSCALLS_IN_RUN.replace(self.outer_syscalls_in_run);
+        BY_EXECUTABLE.with_borrow_mut(|by_executable| {
+            let times = by_executable.entry(self.executable).or_default();
+            times.instructions_ns += instructions_ns;
+            times.program_runs += 1;
+            times.syscalls += syscalls;
         });
     }
 }
@@ -198,6 +223,7 @@ impl Drop for BuiltinFunctionTimer {
             times.syscalls += 1;
             caller.set(times);
         });
+        SYSCALLS_IN_RUN.set(SYSCALLS_IN_RUN.get() + 1);
         BY_SYSCALL.with_borrow_mut(|by_syscall| {
             // Names are compared by address: one built-in function, one name.
             match by_syscall.iter_mut().find(|times| std::ptr::eq(times.name, timer.name)) {
@@ -221,6 +247,7 @@ pub fn syscall_timer_overhead() -> (f64, f64) {
     let totals = TOTALS.get();
     let by_syscall = syscall_times();
     let by_version = version_times();
+    let syscalls_in_run = SYSCALLS_IN_RUN.get();
     let was_in_program = IN_PROGRAM.replace(true);
     let nested_ns = NESTED_NS.get();
 
@@ -238,6 +265,7 @@ pub fn syscall_timer_overhead() -> (f64, f64) {
             cell.set(times);
         }
     });
+    SYSCALLS_IN_RUN.set(syscalls_in_run);
     IN_PROGRAM.set(was_in_program);
     NESTED_NS.set(nested_ns);
     (inside, all - inside)

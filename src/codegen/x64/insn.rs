@@ -722,6 +722,13 @@ pub(in crate::codegen) fn interpreter_dispatch(out: &mut InterpreterGenerator) {
         ; cmp Rq(next_insn), [BYTE frame!(text_section_limit) + rbp]
         ; jae BYTE =>overrun
         ; movzx RTEMP, WORD [ BYTE to_last + RINSN ]
+        // EXPERIMENT (see `StepLayout`): the instruction's first 16 bits become its step index.
+        ;; const { assert!(RTEMP == RCX) }
+        ;; match crate::codegen::generate::step_layout() {
+            crate::codegen::generate::StepLayout::OpcodeLow => {}
+            crate::codegen::generate::StepLayout::RegistersLow => x64asm!(out; rol cx, 8),
+            crate::codegen::generate::StepLayout::Mixed => x64asm!(out; xor cl, ch),
+        }
         ; shl RTEMP, InterpreterGenerator::STEP_SIZE_LOG2 as i8
         ; lea RTEMP, [ DWORD base_addr + RTEMP ]
         ; add RINSN, BYTE size
