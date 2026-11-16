@@ -1,5 +1,18 @@
-//! TEMPORARY probe (not for commit): interpreter cost per instruction against the number of
-//! distinct (opcode, dst, src) instructions in the loop body.
+//! Microbenchmarks behind the parrot diagnostics in seashell's `PARROT_DIAGNOSTICS.md`. All are
+//! `#[ignore]`d and print a table. Run one pinned to a core:
+//!
+//! ```text
+//! cargo test --release --test parrot_probes --no-run
+//! taskset -c 12 target/release/deps/parrot_probes-<hash> --ignored --nocapture <name>
+//! ```
+//!
+//! - `same_opcode_sweep`, `distinct_instruction_sweep`, `distinct_memory_instruction_sweep`:
+//!   interpreter cost per instruction against the number of distinct (opcode, dst, src)
+//!   instructions in the loop body.
+//! - `layout_predictions`: the two loops whose speed the interpreter's step layout swaps. Run
+//!   it once per value of `PARROT_STEP_LAYOUT` (`opcode-low`, `registers-low`, `mixed`).
+//! - `internal_call_cost`, `syscall_dispatch_cost`: one call to a function of the program, and
+//!   one syscall, in each engine and for SBPF v0 and v3.
 #![cfg(all(feature = "jit", not(target_os = "windows"), target_arch = "x86_64"))]
 
 use solana_sbpf::{
