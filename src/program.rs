@@ -422,6 +422,12 @@ pub struct JitProgram {
 }
 
 impl JitProgram {
+    /// Whether the code was produced by [`Executable::parrot_compile`](crate::elf::Executable)
+    /// rather than by the legacy JIT.
+    pub fn is_parrot(&self) -> bool {
+        self.parrot
+    }
+
     /// Offset in `text_section` for each BPF instruction.
     #[inline]
     pub fn pc_section(&self) -> &[u32] {
@@ -596,6 +602,8 @@ where
 
     /// The VM wrapper.
     fn vm(mut vm: EncryptedHostAddressToEbpfVm<C>, a: u64, b: u64, c: u64, d: u64, e: u64) {
+        #[cfg(feature = "execution-timing")]
+        let _timer = crate::timing::BuiltinFunctionTimer::start(core::any::type_name::<Self>());
         unsafe {
             // SAFETY: Sound under the stacked lifetimes model – we've only one `VmAddress`.
             vm.with_vm(|vm| {

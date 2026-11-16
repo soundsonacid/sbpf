@@ -98,6 +98,7 @@ pub(crate) mod defaults {
 }
 
 /// Specify the execution method.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExecutionMode {
     /// Execute the program in an interpreted mode.
     Interpreted,
@@ -112,6 +113,11 @@ pub enum ExecutionMode {
     ///
     /// Falls back to `Interpreted` if parrot does not support the architecture.
     ParrotInterpreted,
+    /// Execute the program with the parrot JIT.
+    ///
+    /// The program must be compiled with [`Executable::parrot_compile`]. Unlike `Jit`, this does
+    /// not run the output of [`Executable::jit_compile`].
+    ParrotJit,
 }
 
 /// VM configuration settings
@@ -448,6 +454,8 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
         mode: &mut ExecutionMode,
         call_frames: &mut [CallFrame],
     ) -> (u64, ProgramResult) {
+        #[cfg(feature = "execution-timing")]
+        let _timer = crate::timing::ProgramRunTimer::start(executable.get_sbpf_version());
         debug_assert!(Arc::ptr_eq(&self.loader, executable.get_loader()));
         self.registers[11] = executable.get_entrypoint_instruction_offset() as u64;
         let initial_insn_count = self.context().get_remaining();
@@ -509,6 +517,16 @@ impl<'a, C: ContextObject> EbpfVm<'a, C> {
                             *mode = ExecutionMode::Interpreted;
                         }
                     }
+                }
+
+                ExecutionMode::ParrotJit => {
+                    #[cfg(target_arch = "x86_64")]
+                    if let Some(compiled_program) = executable.get_compiled_program() {
+                        if compiled_program.is_parrot() {
+                            break 'execute compiled_program.parrot_invoke(executable, self);
+                        }
+                    }
+                    return (0, ProgramResult::Err(EbpfError::JitNotCompiled));
                 }
             }
         }

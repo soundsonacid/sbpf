@@ -50,6 +50,8 @@ pub mod static_analysis;
 pub mod test_syscalls;
 #[cfg(feature = "dev-context-only-utils")]
 pub mod test_utils;
+#[cfg(feature = "execution-timing")]
+pub mod timing;
 pub mod verifier;
 pub mod vm;
 #[cfg(all(feature = "jit", not(target_os = "windows"), target_arch = "x86_64"))]

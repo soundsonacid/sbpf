@@ -11,6 +11,7 @@
 //!
 //! TODO: write full README.md for this.
 
+pub mod call_dispatch;
 mod generate;
 mod templates;
 mod x64;

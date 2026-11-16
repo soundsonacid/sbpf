@@ -493,15 +493,33 @@ extern "sysv64" fn dispatch_call<C: crate::vm::ContextObject>(
     remaining: u64,
     internal_functions: &crate::program::FunctionRegistry<usize>,
 ) -> HostCallResult {
-    match vm.loader.get_function_registry().lookup_by_key(key) {
-        Some((_, (function, _))) => invoke_syscall(vm, function, remaining),
-        None => match internal_functions.lookup_by_key(key) {
-            Some((_, target_pc)) => HostCallResult {
+    use crate::codegen::call_dispatch::{count, resolve, Resolved};
+    // EXPERIMENT (see `call_dispatch`): the same two lookups, behind an optional cache.
+    let resolved = resolve(std::ptr::from_ref(internal_functions) as usize, key, || {
+        match vm.loader.get_function_registry().lookup_by_key(key) {
+            Some((_, (function, _))) => Some(Resolved::Syscall(function as usize)),
+            None => internal_functions
+                .lookup_by_key(key)
+                .map(|(_, target_pc)| Resolved::Internal(target_pc)),
+        }
+    });
+    match resolved {
+        Some(Resolved::Syscall(function)) => {
+            count(|counts| counts.syscalls += 1);
+            // SAFETY: the address is that of a `BuiltinFunction<C>` taken from this VM's loader.
+            let function = unsafe {
+                std::mem::transmute::<usize, crate::program::BuiltinFunction<C>>(function)
+            };
+            invoke_syscall(vm, function, remaining)
+        }
+        Some(Resolved::Internal(target_pc)) => {
+            count(|counts| counts.internal_calls += 1);
+            HostCallResult {
                 rax: target_pc as u64,
                 dl: HostCallStatus::CallInternal,
-            },
-            None => unsupported_syscall(vm, remaining),
-        },
+            }
+        }
+        None => unsupported_syscall(vm, remaining),
     }
 }
 
@@ -513,9 +531,24 @@ extern "sysv64" fn dispatch_syscall<C: crate::vm::ContextObject>(
     // TODO: avoid the hashmap lookup on every syscall. Programs only ever run against a handful of
     // syscall sets, which could get dedicated interpreter/JIT variants with the functions resolved
     // ahead of time.
-    match vm.loader.get_function_registry().lookup_by_key(key) {
-        Some((_, (function, _))) => invoke_syscall(vm, function, remaining),
-        None => unsupported_syscall(vm, remaining),
+    use crate::codegen::call_dispatch::{count, resolve, Resolved};
+    // EXPERIMENT (see `call_dispatch`): the same lookup, behind an optional cache.
+    let registry = vm.loader.get_function_registry();
+    let resolved = resolve(std::ptr::from_ref(registry) as usize, key, || {
+        registry
+            .lookup_by_key(key)
+            .map(|(_, (function, _))| Resolved::Syscall(function as usize))
+    });
+    match resolved {
+        Some(Resolved::Syscall(function)) => {
+            count(|counts| counts.static_syscalls += 1);
+            // SAFETY: the address is that of a `BuiltinFunction<C>` taken from this VM's loader.
+            let function = unsafe {
+                std::mem::transmute::<usize, crate::program::BuiltinFunction<C>>(function)
+            };
+            invoke_syscall(vm, function, remaining)
+        }
+        _ => unsupported_syscall(vm, remaining),
     }
 }
 
